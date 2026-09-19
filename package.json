@@ -1,6 +1,6 @@
 {
   "name": "orchestrator-router",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "Client side router for Web Components using URLPattern (or URI Templates)",
   "author": "Sebastiaan Deckers <sebdeckers83@gmail.com>",
   "contributors": [
@@ -27,7 +27,7 @@
     "open": "open http://127.0.0.1:8115/coverage/ && pnpm start",
     "start": "static -p 8115",
     "cypress:open": "cypress open --browser chrome",
-    "cypress:run": "cypress run --browser chrome",
+    "cypress:run": "rm -Rf .nyc_output && cypress run --browser chrome",
     "coveradge": "coveradge --introTemplate \"UI Coverage (Cypress)\" doc-includes/coverage-badge.svg",
     "check-coverage": "nyc report --check-coverage ",
     "test": "run-s -c cypress:run check-coverage coveradge"

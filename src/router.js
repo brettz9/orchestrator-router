@@ -170,9 +170,23 @@ export default class Router {
     document.addEventListener('click', clickListener);
     globalThis.addEventListener('popstate', popstateListener);
 
+    // Cancelled by `close()` below — otherwise this fires regardless of
+    //   whether the instance has since been closed. A closed instance's
+    //   `trigger()` running anyway is not just a wasted call: since
+    //   `trigger()` now awaits its matched handler (this version), a
+    //   `close()`-then-forgotten instance's deferred initial trigger can
+    //   fire well after the code that created and closed it has moved on
+    //   (e.g. in a test suite, during a *later* test or its setup/teardown)
+    //   and act on now-stale DOM state.
+    /** @type {ReturnType<typeof globalThis.setTimeout>|undefined} */
+    let initialTriggerTimeout;
+
     this.close = () => {
       document.removeEventListener('click', clickListener);
       globalThis.removeEventListener('popstate', popstateListener);
+      // `clearTimeout(undefined)` is a harmless no-op (per spec) when the
+      //   `if` below never ran, so no guard is needed here.
+      globalThis.clearTimeout(initialTriggerTimeout);
     };
 
     // Cypress runs specs after the document leaves the loading state.
@@ -180,7 +194,9 @@ export default class Router {
     if (document.readyState === 'interactive' ||
         document.readyState === 'complete'
     ) {
-      globalThis.setTimeout(() => this.trigger(location), 0);
+      initialTriggerTimeout = globalThis.setTimeout(
+        () => this.trigger(location), 0
+      );
     }
   }
 

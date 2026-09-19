@@ -21,19 +21,52 @@ const delay = (ms = 10) => new Promise((resolve) => {
   setTimeout(resolve, ms);
 });
 
+/**
+ * Every `Router`/`Orchestrator` instance created by the current test, closed
+ * unconditionally in `afterEach` below regardless of whether the test's own
+ * body reached its own inline `.close()` call (an assertion failure partway
+ * through a test would otherwise skip it). This matters beyond tidiness: a
+ * `Router`'s `click`/`popstate` listeners are attached to the *shared*
+ * `document`/`globalThis` for as long as it stays open, so a leaked instance
+ * from one test can still react to a later test's clicks/`pushState`/
+ * `trigger()` calls, and (before this file's own `close()` fix upstream) so
+ * could its own deferred initial-trigger timeout — either way, cross-test
+ * interference that surfaced as an intermittent, hard-to-place failure
+ * several tests later, not a clean failure in the test that actually leaked.
+ * @type {(Router|Orchestrator)[]}
+ */
+const openInstances = [];
+
+/**
+ * @template {Router|Orchestrator} T
+ * @param {T} instance
+ * @returns {T}
+ */
+function track (instance) {
+  openInstances.push(instance);
+  return instance;
+}
+
+afterEach(() => {
+  while (openInstances.length > 0) {
+    /** @type {Router|Orchestrator} */
+    (openInstances.pop()).close();
+  }
+});
+
 describe('Router', () => {
   it('matches URLPattern routes, exposes named groups, and falls back',
     () => {
       /** @type {unknown[]} */
       const calls = [];
       cy.window().then(async () => {
-        const router = new Router(
+        const router = track(new Router(
           new Map([
             [new URLPattern({pathname: '/users/:id', search: '?ref=:ref'}),
               (params) => calls.push(['user', params])]
           ]),
           (path) => calls.push(['fallback', path])
-        );
+        ));
         await router.trigger('/users/42?ref=nav#top');
         await router.trigger('/users/42?ref=nav#top');
         await router.trigger('/missing');
@@ -44,7 +77,6 @@ describe('Router', () => {
         expect(router.route('/books/:isbn', () => undefined)).to.equal(
           router
         );
-        router.close();
       });
     });
 
@@ -52,9 +84,9 @@ describe('Router', () => {
     /** @type {unknown[]} */
     const calls = [];
     cy.window().then(async () => {
-      const router = new Router(new Map(), (path) => calls.push(path), {
-        patterns: 'uritemplate'
-      });
+      const router = track(new Router(
+        new Map(), (path) => calls.push(path), {patterns: 'uritemplate'}
+      ));
       router.route(
         new URLPattern({pathname: '/items/:id'}),
         (params) => calls.push(params)
@@ -63,7 +95,6 @@ describe('Router', () => {
       await router.trigger('/items/a%20b');
       await router.trigger('/search?q=hello');
       expect(calls).to.deep.equal([{id: 'a%20b'}, {q: 'hello'}]);
-      router.close();
     });
   });
 
@@ -71,33 +102,61 @@ describe('Router', () => {
     /** @type {unknown[]} */
     const calls = [];
     cy.window().then(async () => {
-      const router = new Router(new Map([
+      const router = track(new Router(new Map([
         ['/next', () => calls.push('next')]
-      ]));
+      ])));
       await router.trigger('/next');
       expect(calls).to.deep.equal(['next']);
       router.close();
+      // Explicitly closed early (unlike every other test here, which
+      //   leaves this to the shared `afterEach`) specifically to prove
+      //   `close()` itself still works standalone, and that closing twice
+      //   (this test's own call, then `afterEach`'s) is safe.
     });
   });
+
+  it(
+    "close() cancels the constructor's own deferred initial trigger, " +
+    'not just its click/popstate listeners',
+    () => {
+      /** @type {unknown[]} */
+      const calls = [];
+      cy.window().then(async () => {
+        const router = track(new Router(new Map([
+          ['/', () => calls.push('initial')]
+        ]), (path) => calls.push(['fallback', path])));
+        // Closed immediately — well before the constructor's own deferred
+        //   `setTimeout(() => this.trigger(location), 0)` has had any
+        //   chance to fire.
+        router.close();
+        await delay(20);
+        // If `close()` only removed the click/popstate listeners (the
+        //   pre-4.0.0 behavior), the deferred initial trigger would still
+        //   have fired during this delay regardless, pushing whatever the
+        //   test page's current location resolved to — a closed instance
+        //   acting on state well after the code that closed it moved on.
+        expect(calls).to.deep.equal([]);
+      });
+    }
+  );
 
   it('awaits an async handler before trigger() itself resolves',
     () => {
       /** @type {unknown[]} */
       const calls = [];
       cy.window().then(async () => {
-        const router = new Router(new Map([
+        const router = track(new Router(new Map([
           ['/slow', async () => {
             await delay();
             calls.push('slow-done');
           }]
-        ]));
+        ])));
         await router.trigger('/slow');
         // If `trigger()` merely started the handler without awaiting it (the
         //   pre-3.1.0 behavior), this would run well before `calls` was
         //   ever populated, since nothing here would have paused for the
         //   handler's own internal delay.
         expect(calls).to.deep.equal(['slow-done']);
-        router.close();
       });
     });
 
@@ -105,13 +164,12 @@ describe('Router', () => {
     /** @type {unknown[]} */
     const calls = [];
     cy.window().then(async () => {
-      const router = new Router(new Map(), async (path) => {
+      const router = track(new Router(new Map(), async (path) => {
         await delay();
         calls.push(['fallback-done', path]);
-      });
+      }));
       await router.trigger('/missing');
       expect(calls).to.deep.equal([['fallback-done', '/missing']]);
-      router.close();
     });
   });
 
@@ -119,9 +177,9 @@ describe('Router', () => {
     /** @type {unknown[]} */
     const calls = [];
     cy.window().then(() => {
-      const router = new Router(new Map([
+      track(new Router(new Map([
         ['/about', () => calls.push('about')]
-      ]), () => calls.push('fallback'));
+      ]), () => calls.push('fallback')));
 
       const anchor = document.createElement('a');
       anchor.href = '/about';
@@ -144,7 +202,6 @@ describe('Router', () => {
         composed: true
       }));
       expect(calls).to.deep.equal(['about']);
-      router.close();
       document.body.querySelectorAll('a').forEach((el) => el.remove());
     });
   });
@@ -158,7 +215,9 @@ describe('Router', () => {
         ['/same', () => calls.push('same')],
         [new URLPattern({pathname: '/*'}), () => calls.push('wild')]
       ];
-      const router = new Router(new Map(routes), () => calls.push('fallback'));
+      const router = track(
+        new Router(new Map(routes), () => calls.push('fallback'))
+      );
 
       await router.trigger('/same');
       await router.trigger('/same');
@@ -172,14 +231,12 @@ describe('Router', () => {
         composed: true
       }));
       expect(calls).to.deep.equal(['same', 'wild']);
-      router.close();
 
-      const defaultRouter = new Router();
+      const defaultRouter = track(new Router());
       defaultRouter.route('/home', () => calls.push('home'));
       await defaultRouter.trigger('/home');
       await defaultRouter.trigger('/home');
       expect(calls).to.deep.equal(['same', 'wild', 'home']);
-      defaultRouter.close();
     });
   });
 
@@ -216,9 +273,9 @@ describe('Router', () => {
         [pattern, (params) => calls.push(['virtual', params])],
         [new URLPattern({pathname: '/only'}), () => calls.push(['only'])]
       ];
-      const router = new Router(
+      const router = track(new Router(
         new Map(routes), (path) => calls.push(['fallback', path])
-      );
+      ));
 
       await router.trigger('/virtual/42');
       await router.trigger('/missing');
@@ -228,7 +285,6 @@ describe('Router', () => {
         ['fallback', '/missing'],
         ['fallback', '']
       ]);
-      router.close();
     });
   });
 });
@@ -241,7 +297,7 @@ describe('Orchestrator', () => {
   const setup = (scenes, patterns) => cy.window().then((window) => {
     const stage = window.document.createElement('main');
     window.document.body.append(stage);
-    const orchestrator = new Orchestrator({stage, scenes, patterns});
+    const orchestrator = track(new Orchestrator({stage, scenes, patterns}));
     return {stage, orchestrator};
   });
 
@@ -268,7 +324,6 @@ describe('Orchestrator', () => {
       expect(stage.firstElementChild?.localName).to.equal('settings-panel');
       await orchestrator.trigger('/missing');
       expect(stage.firstElementChild).to.be.null;
-      orchestrator.close();
     });
   });
 
@@ -295,7 +350,6 @@ describe('Orchestrator', () => {
       expect(window.location.pathname).to.equal('/new');
       expect(stage.children).to.have.length(0);
       window.history.replaceState(null, '', '/');
-      orchestrator.close();
     });
   });
 
@@ -320,7 +374,6 @@ describe('Orchestrator', () => {
         expect(callbackCalls).to.deep.equal([
           ['/async-callback/:id', {id: '3'}]
         ]);
-        orchestrator.close();
       });
     });
 
@@ -344,7 +397,6 @@ describe('Orchestrator', () => {
         ['/callback/:id', {id: '9'}]
       ]);
       expect(stage.children).to.have.length(0);
-      orchestrator.close();
     });
   });
 
@@ -355,7 +407,6 @@ describe('Orchestrator', () => {
       await orchestrator.trigger('/search?q=term');
       const scene = /** @type {HTMLElement} */ (stage.firstElementChild);
       expect(scene.dataset.q).to.equal('term');
-      orchestrator.close();
     });
   });
 });
