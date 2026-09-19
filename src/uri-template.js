@@ -261,14 +261,16 @@ function uriTemplateSubstitution (spec) {
       );
       for (let i = 1; i < arrayValue.length; i++) {
         stringValue = arrayValue[i];
-        if (hasEquals && !stringValue.includes('=')) {
-          // Bit of a hack - if we're expecting "=" for key/value pairs,
-          //   and values can't contain "=", then assume a value has been
-          //   accidentally split
-          arrayValue[i - 1] += (separator || ',') + stringValue;
-          arrayValue.splice(i, 1);
-          i--;
+        if (!hasEquals || stringValue.includes('=')) {
+          continue;
         }
+
+        // Bit of a hack - if we're expecting "=" for key/value pairs,
+        //   and values can't contain "=", then assume a value has been
+        //   accidentally split
+        arrayValue[i - 1] += (separator || ',') + stringValue;
+        arrayValue.splice(i, 1);
+        i--;
       }
       for (let i = 0; i < arrayValue.length; i++) {
         stringValue = arrayValue[i];
@@ -481,10 +483,13 @@ class UriTemplate {
      *   (
      *     callback: (
      *       varName: string
-     *     ) => undefined | string | {[key: string]: string}
+     *     ) => undefined | string | string[] | {[key: string]: string}
      *   ): string;
      *   (
-     *     vars: {[key: string]: undefined | string | {[key: string]: string}}
+     *     vars: {
+     *       [key: string]: undefined | string | string[] |
+     *         {[key: string]: string}
+     *     }
      *   ): string
      * }}
      */
@@ -612,7 +617,9 @@ class UriTemplate {
 
   /**
    * @type {(
-   *   vars: {[key: string]: undefined|string|{[key: string]: string}}
+   *   vars: {
+   *     [key: string]: undefined|string|string[]|{[key: string]: string}
+   *   }
    * ) => string}
    */
   fillFromObject (obj) {

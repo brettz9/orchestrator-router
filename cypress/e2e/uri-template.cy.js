@@ -39,9 +39,7 @@ describe('UriTemplate', () => {
       var: 'a', empty: ''
     })).to.equal(';var=a;empty');
     expect(new UriTemplate('{?list*}').fillFromObject({
-      list: /** @type {{[key: string]: string}} */ (/** @type {unknown} */ (
-        ['a', 'b']
-      ))
+      list: ['a', 'b']
     })).to.equal('?list=a&list=b');
     expect(new UriTemplate('{?keys*}').fillFromObject({
       keys: {a: '1', b: '2'}

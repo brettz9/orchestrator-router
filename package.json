@@ -1,6 +1,6 @@
 {
   "name": "orchestrator-router",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Client side router for Web Components using URLPattern (or URI Templates)",
   "author": "Sebastiaan Deckers <sebdeckers83@gmail.com>",
   "contributors": [

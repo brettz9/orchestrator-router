@@ -201,10 +201,20 @@ export default class Router {
   }
 
   /**
+   * Resolves `url` against the registered routes and awaits whichever
+   * handler (or `fallback`) matched — a plain synchronous handler resolves
+   * immediately, same as before; an `async` one is now actually waited on
+   * rather than merely started and forgotten. See CHANGES.md (this
+   * version) for what this changes for callers that don't await `trigger`
+   * themselves (the overwhelmingly common case, including this library's
+   * own internal `popstateListener`/readyState-triggered calls, deliberately
+   * left un-awaited below): none of their existing behavior changes — a
+   * handler that threw already became a silent unhandled rejection before
+   * this change, and still does if nobody awaits this call now either.
    * @param {string|Location} url
-   * @returns {Router}
+   * @returns {Promise<Router>}
    */
-  trigger (url = '') {
+  async trigger (url = '') {
     const path = typeof url === 'string'
       ? url
       : url.pathname + url.search + url.hash;
@@ -214,16 +224,18 @@ export default class Router {
     }
     this.path = path;
 
-
     for (const [predicate, handler] of this.routes) {
       const params = predicate(path);
       if (params !== undefined) {
-        handler(params);
+        // Not sequential: the loop always returns right after this, so at
+        //   most one iteration ever awaits anything.
+        // eslint-disable-next-line no-await-in-loop -- See above
+        await handler(params);
         return this;
       }
     }
 
-    this.fallback(path);
+    await this.fallback(path);
     return this;
   }
 }

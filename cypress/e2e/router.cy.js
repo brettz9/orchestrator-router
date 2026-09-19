@@ -3,33 +3,55 @@
   callbacks are asynchronous despite synchronous Mocha test functions. */
 import {Orchestrator, Router} from '../../src/index.js';
 
+/**
+ * A real macrotask delay, not just a microtask (`Promise.resolve()`) —
+ * needed so the "is this actually awaited" tests below are a reliable
+ * regression check. A single-microtask delay happens to resolve before
+ * `trigger()`'s own outer promise regardless of whether the handler is
+ * genuinely awaited (both are exactly one microtask tick deep, and which
+ * one the JS engine happens to run first is a queueing-order coincidence,
+ * not a real signal) — a `setTimeout`-based delay can never finish before
+ * a same-tick microtask chain, so only a *real* `await` of the handler
+ * inside `trigger()` can make the assertion below see the pushed value.
+ * @param {number} [ms]
+ * @returns {Promise<void>}
+ */
+// eslint-disable-next-line promise/avoid-new -- No callback-based timer API
+const delay = (ms = 10) => new Promise((resolve) => {
+  setTimeout(resolve, ms);
+});
+
 describe('Router', () => {
-  it('matches URLPattern routes, exposes named groups, and falls back', () => {
-    /** @type {unknown[]} */
-    const calls = [];
-    cy.window().then(() => {
-      const router = new Router(
-        new Map([
-          [new URLPattern({pathname: '/users/:id', search: '?ref=:ref'}),
-            (params) => calls.push(['user', params])]
-        ]),
-        (path) => calls.push(['fallback', path])
-      );
-      router.trigger('/users/42?ref=nav#top').trigger('/users/42?ref=nav#top');
-      router.trigger('/missing');
-      expect(calls).to.deep.equal([
-        ['user', {id: '42', ref: 'nav'}],
-        ['fallback', '/missing']
-      ]);
-      expect(router.route('/books/:isbn', () => undefined)).to.equal(router);
-      router.close();
+  it('matches URLPattern routes, exposes named groups, and falls back',
+    () => {
+      /** @type {unknown[]} */
+      const calls = [];
+      cy.window().then(async () => {
+        const router = new Router(
+          new Map([
+            [new URLPattern({pathname: '/users/:id', search: '?ref=:ref'}),
+              (params) => calls.push(['user', params])]
+          ]),
+          (path) => calls.push(['fallback', path])
+        );
+        await router.trigger('/users/42?ref=nav#top');
+        await router.trigger('/users/42?ref=nav#top');
+        await router.trigger('/missing');
+        expect(calls).to.deep.equal([
+          ['user', {id: '42', ref: 'nav'}],
+          ['fallback', '/missing']
+        ]);
+        expect(router.route('/books/:isbn', () => undefined)).to.equal(
+          router
+        );
+        router.close();
+      });
     });
-  });
 
   it('supports URLPattern instances and URI templates', () => {
     /** @type {unknown[]} */
     const calls = [];
-    cy.window().then(() => {
+    cy.window().then(async () => {
       const router = new Router(new Map(), (path) => calls.push(path), {
         patterns: 'uritemplate'
       });
@@ -38,8 +60,8 @@ describe('Router', () => {
         (params) => calls.push(params)
       );
       router.route('/search{?q}', (params) => calls.push(params));
-      router.trigger('/items/a%20b');
-      router.trigger('/search?q=hello');
+      await router.trigger('/items/a%20b');
+      await router.trigger('/search?q=hello');
       expect(calls).to.deep.equal([{id: 'a%20b'}, {q: 'hello'}]);
       router.close();
     });
@@ -48,12 +70,47 @@ describe('Router', () => {
   it('navigates to a registered route and can be closed', () => {
     /** @type {unknown[]} */
     const calls = [];
-    cy.window().then(() => {
+    cy.window().then(async () => {
       const router = new Router(new Map([
         ['/next', () => calls.push('next')]
       ]));
-      router.trigger('/next');
+      await router.trigger('/next');
       expect(calls).to.deep.equal(['next']);
+      router.close();
+    });
+  });
+
+  it('awaits an async handler before trigger() itself resolves',
+    () => {
+      /** @type {unknown[]} */
+      const calls = [];
+      cy.window().then(async () => {
+        const router = new Router(new Map([
+          ['/slow', async () => {
+            await delay();
+            calls.push('slow-done');
+          }]
+        ]));
+        await router.trigger('/slow');
+        // If `trigger()` merely started the handler without awaiting it (the
+        //   pre-3.1.0 behavior), this would run well before `calls` was
+        //   ever populated, since nothing here would have paused for the
+        //   handler's own internal delay.
+        expect(calls).to.deep.equal(['slow-done']);
+        router.close();
+      });
+    });
+
+  it('awaits an async fallback before trigger() itself resolves', () => {
+    /** @type {unknown[]} */
+    const calls = [];
+    cy.window().then(async () => {
+      const router = new Router(new Map(), async (path) => {
+        await delay();
+        calls.push(['fallback-done', path]);
+      });
+      await router.trigger('/missing');
+      expect(calls).to.deep.equal([['fallback-done', '/missing']]);
       router.close();
     });
   });
@@ -95,15 +152,17 @@ describe('Router', () => {
   it('covers same-path, wildcard, and non-anchor branches', () => {
     /** @type {unknown[]} */
     const calls = [];
-    cy.window().then(() => {
-      const router = new Router(new Map([
+    cy.window().then(async () => {
+      /** @type {[string|URLPattern, () => number][]} */
+      const routes = [
         ['/same', () => calls.push('same')],
         [new URLPattern({pathname: '/*'}), () => calls.push('wild')]
-      ]), () => calls.push('fallback'));
+      ];
+      const router = new Router(new Map(routes), () => calls.push('fallback'));
 
-      router.trigger('/same');
-      router.trigger('/same');
-      router.trigger('/wild/ok');
+      await router.trigger('/same');
+      await router.trigger('/same');
+      await router.trigger('/wild/ok');
 
       const div = document.createElement('div');
       document.body.append(div);
@@ -117,8 +176,8 @@ describe('Router', () => {
 
       const defaultRouter = new Router();
       defaultRouter.route('/home', () => calls.push('home'));
-      defaultRouter.trigger('/home');
-      defaultRouter.trigger('/home');
+      await defaultRouter.trigger('/home');
+      await defaultRouter.trigger('/home');
       expect(calls).to.deep.equal(['same', 'wild', 'home']);
       defaultRouter.close();
     });
@@ -127,28 +186,43 @@ describe('Router', () => {
   it('handles non-matches, duck-typed patterns, and default triggers', () => {
     /** @type {unknown[]} */
     const calls = [];
-    cy.window().then(() => {
-      const pattern = {
+    cy.window().then(async () => {
+      // A minimal object exercising the exact `exec`/`test`/`pathname` trio
+      //   `isUrlPattern`'s own duck-typing fallback checks for (its own doc
+      //   comment: real `URLPattern` support is what Node lacks a brand for,
+      //   not what this module actually uses) — not a real `URLPattern`
+      //   instance, so it doesn't structurally satisfy every property of
+      //   the real DOM interface (`hasRegExpGroups`, `hostname`, etc.) that
+      //   this library's own runtime check never looks at. The assertion
+      //   below asserts exactly what `isUrlPattern`'s own type predicate
+      //   (`value is URLPattern`) already promises callers: anything
+      //   passing its duck-type check is treated as a `URLPattern` from
+      //   here on.
+      const pattern = /** @type {URLPattern} */ ({
         pathname: '/virtual/:id',
         search: '*',
         hash: '*',
         test: () => true,
-        exec: (path) => (path === '/virtual/42'
+        exec: (/** @type {string} */ path) => (path === '/virtual/42'
           ? {
             pathname: {groups: {id: '42', missing: undefined}},
             search: {groups: {}},
             hash: {groups: {}}
           }
           : null)
-      };
-      const router = new Router(new Map([
+      });
+      /** @type {[URLPattern, (params: unknown) => number][]} */
+      const routes = [
         [pattern, (params) => calls.push(['virtual', params])],
         [new URLPattern({pathname: '/only'}), () => calls.push(['only'])]
-      ]), (path) => calls.push(['fallback', path]));
+      ];
+      const router = new Router(
+        new Map(routes), (path) => calls.push(['fallback', path])
+      );
 
-      router.trigger('/virtual/42');
-      router.trigger('/missing');
-      router.trigger();
+      await router.trigger('/virtual/42');
+      await router.trigger('/missing');
+      await router.trigger();
       expect(calls).to.deep.equal([
         ['virtual', {id: '42'}],
         ['fallback', '/missing'],
@@ -181,18 +255,18 @@ describe('Orchestrator', () => {
     setup([
       ['/users/:id', 'user-card'],
       ['/settings', 'settings-panel']
-    ]).then(({stage, orchestrator}) => {
-      orchestrator.trigger('/users/1');
+    ]).then(async ({stage, orchestrator}) => {
+      await orchestrator.trigger('/users/1');
       const firstScene = /** @type {HTMLElement} */ (stage.firstElementChild);
       expect(firstScene.localName).to.equal('user-card');
       expect(firstScene.dataset.id).to.equal('1');
       const scene = firstScene;
-      orchestrator.trigger('/users/2');
+      await orchestrator.trigger('/users/2');
       expect(stage.firstElementChild).to.equal(scene);
       expect(scene.dataset.id).to.equal('2');
-      orchestrator.trigger('/settings');
+      await orchestrator.trigger('/settings');
       expect(stage.firstElementChild?.localName).to.equal('settings-panel');
-      orchestrator.trigger('/missing');
+      await orchestrator.trigger('/missing');
       expect(stage.firstElementChild).to.be.null;
       orchestrator.close();
     });
@@ -212,18 +286,43 @@ describe('Orchestrator', () => {
       ['/old', /** @type {Location} */ (/** @type {unknown} */ (
         new URL('/new', window.location.href)
       ))]
-    ]).then(({stage, orchestrator}) => {
-      orchestrator.trigger('/callback/7');
+    ]).then(async ({stage, orchestrator}) => {
+      await orchestrator.trigger('/callback/7');
       expect(callbackCalls).to.deep.equal([
         ['/callback/:id', {id: '7'}]
       ]);
-      orchestrator.trigger('/old');
+      await orchestrator.trigger('/old');
       expect(window.location.pathname).to.equal('/new');
       expect(stage.children).to.have.length(0);
       window.history.replaceState(null, '', '/');
       orchestrator.close();
     });
   });
+
+  it('awaits an async scene callback before trigger() itself resolves',
+    () => {
+      /** @type {unknown[]} */
+      const callbackCalls = [];
+      setup([
+        [
+          '/async-callback/:id',
+          /** @type {import('../../src/orchestrator.js').SceneCallback} */
+          (async (pattern, params) => {
+            await delay();
+            callbackCalls.push([pattern, params]);
+          })
+        ]
+      ]).then(async ({orchestrator}) => {
+        await orchestrator.trigger('/async-callback/3');
+        // If `#onRoute` merely started the callback without awaiting it
+        //   (the pre-3.1.0 behavior), this would run before `callbackCalls`
+        //   was ever populated.
+        expect(callbackCalls).to.deep.equal([
+          ['/async-callback/:id', {id: '3'}]
+        ]);
+        orchestrator.close();
+      });
+    });
 
   it('removes the existing scene before running a callback', () => {
     /** @type {unknown[]} */
@@ -237,10 +336,10 @@ describe('Orchestrator', () => {
           callbackCalls.push([pattern, params]);
         })
       ]
-    ]).then(({stage, orchestrator}) => {
-      orchestrator.trigger('/current');
+    ]).then(async ({stage, orchestrator}) => {
+      await orchestrator.trigger('/current');
       expect(stage.children).to.have.length(1);
-      orchestrator.trigger('/callback/9');
+      await orchestrator.trigger('/callback/9');
       expect(callbackCalls).to.deep.equal([
         ['/callback/:id', {id: '9'}]
       ]);
@@ -252,8 +351,8 @@ describe('Orchestrator', () => {
   it('uses URI-template scene patterns', () => {
     setup([
       ['/search{?q}', 'search-results']
-    ], 'uritemplate').then(({stage, orchestrator}) => {
-      orchestrator.trigger('/search?q=term');
+    ], 'uritemplate').then(async ({stage, orchestrator}) => {
+      await orchestrator.trigger('/search?q=term');
       const scene = /** @type {HTMLElement} */ (stage.firstElementChild);
       expect(scene.dataset.q).to.equal('term');
       orchestrator.close();

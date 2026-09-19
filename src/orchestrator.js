@@ -53,6 +53,7 @@ export default class Orchestrator extends Router {
 
       /**
        * @param {Params} params
+       * @returns {Promise<void>}
        */
       const handler = (params) => this.#onRoute(
         pattern,
@@ -97,16 +98,16 @@ export default class Orchestrator extends Router {
    *   redirect?: URL
    *   callback?: SceneCallback
    * }} cfg
-   * @returns {void}
+   * @returns {Promise<void>}
    */
-  #onRoute (pattern, params, {tagName, callback, redirect}) {
+  async #onRoute (pattern, params, {tagName, callback, redirect}) {
     if (callback) {
       if (this.scene !== undefined) {
         const {scene} = this;
         delete this.scene;
         scene.remove();
       }
-      callback.call(this, pattern, params);
+      await callback.call(this, pattern, params);
     }
 
     if (redirect) {
