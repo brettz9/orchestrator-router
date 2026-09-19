@@ -3,3 +3,7 @@ allowBuilds:
   es5-ext: true
   is-hidden-file: true
   unrs-resolver: true
+minimumReleaseAgeExclude:
+  - eslint-config-ash-nazg@43.2.2
+  - eslint-plugin-jsdoc@64.5.4
+  - eslint-plugin-unicorn@76.0.0
